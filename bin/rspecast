@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'rspecast'
+require 'socket'
+require 'json'
+require 'parser/current'
+require 'logger'
+
+file = File.open('/tmp/rspecast.log', File::WRONLY | File::APPEND | File::CREAT)
+file.sync = true # autoflush
+# ages the logfile daily
+logger = Logger.new(file, 'daily')
+logger.level = Logger::DEBUG
+
+# apply process title, does not works in MacOS activity monitor
+Process.setproctitle('rspecast')
+
+tcp_server_port = ENV['PORT'] || 8888
+
+logger.info { "Server listening on port: #{tcp_server_port}" }
+
+Socket.tcp_server_loop(tcp_server_port) do |connection|
+  Thread.new do
+    logger.info 'Client connected!'
+
+    begin
+      while data = connection.readline do
+        logger.debug('Request') { data }
+
+        payload = JSON.parse(data, symbolize_names: true)
+
+        rspec_ast = Rspecast::Parser.new(payload)
+        rspec_ast.logger = logger
+        response = {
+          file_path: rspec_ast.file_path, # send back to validate
+          payload: rspec_ast.to_ast
+        }
+
+        connection.print response.to_json
+
+        logger.debug('Response') { response.to_json }
+      end
+    rescue StandardError => e
+      logger.error { e.message }
+      logger.error { e.backtrace.join("\n") }
+      # retry
+      connection.close
+    end
+
+    logger.info 'Closing connection'
+    connection.close
+  end
+end
